@@ -60,8 +60,9 @@ class Product:
 		self.codeNum = ''
 		self.singlePrice = None
 		self.casePrice = None
-		self.barcodes = DBF(barcodes, encoding='latin-1')
-		self.liqcode = DBF(liqcode, encoding='latin-1')
+		self.barcodes = DBF(barcodes, load=True, encoding='latin-1')
+		print(type(self.barcodes))
+		self.liqcode = DBF(liqcode, load=True, encoding='latin-1')
 		self.deposit =  None
 		self.dep = False
 		self.found = False
