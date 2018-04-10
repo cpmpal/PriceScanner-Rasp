@@ -44,8 +44,9 @@ class samb:
 			return(False)
 
 if __name__ == '__main__':
-	server_ip = getServerIP()
+	a = samb()
+	server_ip = a.getServerIP()
 	print(server_ip)
-	getFile()
+	a.getFile()
 
 
