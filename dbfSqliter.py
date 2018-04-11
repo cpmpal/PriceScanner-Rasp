@@ -12,9 +12,13 @@ class reader:
 		path, name = os.path.split(dbf)
 		self.dbf = name
 		self.f = open(dbf, 'rb')
-		self.numrec, self.lenheader = struct.unpack('<xxxxLH22x', 
-			self.f.read(32))
-		self.numrec += 1    
+		self.numrec, self.lenheader, self.recsize = struct.unpack('<xxxxLHH20x', self.f.read(32))
+		self.numrec += 1
+		if not os.path.isfile(self.dbf+'.size'):
+			self.writeNewRecordSize()
+			self.oldnum = 0
+		else:
+			self.readOldRecordSize()    
 		self.numfields = (self.lenheader - 33) // 32
 		# The first field is always a one byte deletion flag
 		fields = [('DeletionFlag', 'C', 1),]
@@ -38,110 +42,144 @@ class reader:
 				    fieldinfo in self.fields])
 		self.fmtsiz = struct.calcsize(self.fmt)
 
-	def readRecord(self, delete=False):
-		onceThrough = False	
-		for i in range(self.numrec):
-			test = self.f.read(self.fmtsiz)
-			record = struct.unpack(self.fmt, test)
-			self._dtypes = {}
-			result = []
-		        for idx, value in enumerate(record):
-				name, typ, size = self.fields[idx]
+	def writeNewRecordSize(self):
+		q = open(self.dbf+'.size', 'w')
+		q.write(str(self.numrecs)+'\n')
+		q.close()
 
-				# String (character) types, remove excess white space
-				if typ == "C":
-				    if name == 'DeletionFlag':
-					value = (value == '*')
-					if name not in self._dtypes:
-						self._dtypes[name] = "bool"
-				    else:
-					    if name not in self._dtypes:
-						self._dtypes[name] = "str"
-					    value = value.strip()
-					   # Convert empty strings to NaN
-					    if value == b'':
-						value = None
+	def readOldRecordSize(self):
+		q = open(self.dbf+'.size', 'r')
+		self.oldnum = int(q.readline())
+		return self.oldnum
+
+	def recordsAdded(self):
+		return self.numrec == self.oldnum
+	
+	def readRecord(self, delete=False):
+		if not self.recordsAdded():
+			yield None
+		else:
+			recordDelta = self.numrec - self.oldrec
+			self.f.seek(recordDelta*self.fmtsiz, 1)
+			onceThrough = False	
+			for i in range(self.oldrec, self.numrec):
+				test = self.f.read(self.fmtsiz)
+				record = struct.unpack(self.fmt, test)
+				self._dtypes = {}
+				result = []
+				for idx, value in enumerate(record):
+					name, typ, size = self.fields[idx]
+
+					# String (character) types, remove excess white space
+					if typ == "C":
+					    if name == 'DeletionFlag':
+						value = (value == '*')
+						if name not in self._dtypes:
+							self._dtypes[name] = "bool"
 					    else:
-						value = value.decode(self._enc)
-				# Escape quoted characters
-				# Numeric type. Stored as string
-				elif typ == "N":
-				    # A decimal should indicate a float
-				    if b'.' in value:
-					if name not in self._dtypes:
-					    self._dtypes[name] = "float"
-					value = float(value)
-					# No decimal, probably an integer, but if that fails,
-					# probably NaN
-				    else:
+						    if name not in self._dtypes:
+							self._dtypes[name] = "str"
+						    value = value.strip()
+						   # Convert empty strings to NaN
+						    if value == b'':
+							value = None
+						    else:
+							value = value.decode(self._enc)
+					# Escape quoted characters
+					# Numeric type. Stored as string
+					elif typ == "N":
+					    # A decimal should indicate a float
+					    if b'.' in value:
+						if name not in self._dtypes:
+						    self._dtypes[name] = "float"
+						value = float(value)
+						# No decimal, probably an integer, but if that fails,
+						# probably NaN
+					    else:
+						    try:
+							if name not in self._dtypes:
+								self._dtypes[name] = "int"
+
+							value = int(value)
+						    except:
+							 # I changed this for SQL->Pandas conversion
+							 # Otherwise floats were not showing up correct
+							 value = float('nan')
+
+					# Date stores as string "YYYYMMDD", convert to datetime
+					elif typ == 'D':
+					    
 					    try:
 						if name not in self._dtypes:
-							self._dtypes[name] = "int"
+						    self._dtypes[name] = "date"
 
-						value = int(value)
+						y, m, d = int(value[:4]), int(value[4:6]), \
+							  int(value[6:8])
 					    except:
-						 # I changed this for SQL->Pandas conversion
-						 # Otherwise floats were not showing up correct
-						 value = float('nan')
+						value = None
+					    else:
+						value = datetime.date(y, m, d)
 
-				# Date stores as string "YYYYMMDD", convert to datetime
-				elif typ == 'D':
-				    
-				    try:
-					if name not in self._dtypes:
-					    self._dtypes[name] = "date"
+					# Booleans can have multiple entry values
+					elif typ == 'L':
+					    if name not in self._dtypes:
+						self._dtypes[name] = "bool"
+					    if value in b'TyTt':
+						value = True
+					    elif value in b'NnFf':
+						value = False
+					    # '?' indicates an empty value, convert this to NaN
+					    else:
+						value = float('nan')
 
-					y, m, d = int(value[:4]), int(value[4:6]), \
-						  int(value[6:8])
-				    except:
-					value = None
-				    else:
-					value = datetime.date(y, m, d)
+					# Floating points are also stored as strings.
+					elif typ == 'F':
+					    if name not in self._dtypes:
+						self._dtypes[name] = "float"
+					    try:
+						value = float(value)
+					    except:
+						value = float('nan')
 
-				# Booleans can have multiple entry values
-				elif typ == 'L':
-				    if name not in self._dtypes:
-					self._dtypes[name] = "bool"
-				    if value in b'TyTt':
-					value = True
-				    elif value in b'NnFf':
-					value = False
-				    # '?' indicates an empty value, convert this to NaN
-				    else:
-					value = float('nan')
-
-				# Floating points are also stored as strings.
-				elif typ == 'F':
-				    if name not in self._dtypes:
-					self._dtypes[name] = "float"
-				    try:
-					value = float(value)
-				    except:
-					value = float('nan')
-
-				#Memo field not implemented
-				elif typ == 'M':
-					value = None
-					if name not in self._dtypes:
-						self._dtypes[name] = "None"
-				else:
-				    print(name)
-				    err = 'Column type "{}" not yet supported.'
-				    raise ValueError(err.format(value))
-				result.append(value)
-			if not onceThrough:
-				self.f.seek(-1*self.fmtsiz, 1)
-				onceThrough = True
+					#Memo field not implemented
+					elif typ == 'M':
+						value = None
+						if name not in self._dtypes:
+							self._dtypes[name] = "None"
+					else:
+					    print(name)
+					    err = 'Column type "{}" not yet supported.'
+					    raise ValueError(err.format(value))
+					result.append(value)
+				if not onceThrough:
+					self.f.seek(-1*self.fmtsiz, 1)
+					onceThrough = True
+					if delete:
+						yield tuple([result[0], result[1]])
+					else:
+						yield tuple(result[1:])
+					continue
 				if delete:
 					yield tuple([result[0], result[1]])
 				else:
 					yield tuple(result[1:])
-				continue
-			if delete:
-				yield tuple([result[0], result[1]])
+			   
+	def readDelete(self):
+		#Just read every delete flag, and skip the contents of the record
+		b = False
+		if b:
+			return
+		for i in range(self.numrec):
+			test = self.f.read(self.recsize)
+			if not test[-1] == b'\x1a': 	
+				codeBytes = self.fields[1][2]
+				junkBytes = (self.recsize-1) - codeBytes
+				strucString = '<c'+str(codeBytes)+'s'+str(junkBytes)+'x'
+				flag, code = struct.unpack(strucString, test)
+				yield tuple([(flag == '*'), code])
 			else:
-				yield tuple(result[1:])
-		    
+				break
+
 
 class sqler:
 	
@@ -175,12 +213,20 @@ class sqler:
 		createStmt = 'CREATE TABLE IF NOT EXISTS '+dbf.dbf[:-4]+' ('
 		#Create deletion flag column
 		createStmt += self.rowName(dbf.fields[0], dbf._dtypes[dbf.fields[0][0]]) + ', '
-		createStmt += self.rowName(dbf.fields[1], dbf._dtypes[dbf.fields[1][0]]) + ' PRIMARY KEY, '
+		if dbf.dbf.startsWith('BARCODES'):
+			createStmt += self.rowName(dbf.fields[1], dbf._dtypes[dbf.fields[1][0]]) + ', '
+		
+
+		else:
+			createStmt += self.rowName(dbf.fields[1], dbf._dtypes[dbf.fields[1][0]]) + ' PRIMARY KEY, '
 		
 
 		for field in dbf.fields[2:]:
 			createStmt += self.rowName(field, dbf._dtypes[field[0]]) +', '
-		createStmt = createStmt[:-2]+');'
+		createStmt = createStmt[:-2]
+		if dbd.dbf.startsWith('BARCODES'):
+			createStmt += ', PRIMARY KEY (' + dbf.fields[1]+', '+dbf.fields[2]+') '
+		createStmt += ')'
 		c = self.conn.cursor()
 		c.execute(createStmt)
 		self.conn.commit()
@@ -209,7 +255,7 @@ class sqler:
 		c = self.conn.cursor()
 		updateStmt = 'UPDATE ' + dbf.dbf[:-4] + ' SET '
 		updateStmt += 'DeletionFlag = (?) WHERE CODE_NUM = (?)'
-		a = d.readRecord(delete=True)
+		a = d.readDelete()
 		c.executemany(updateStmt, a)
 		self.conn.commit()
 		self.conn.close()
@@ -227,14 +273,16 @@ if __name__ == '__main__':
 	t1 = time.time()
 	d = reader('BARCODES.dbf')
 	test = sqler()
-	test.insertRows(d)
-	del d
+	if d.recordsAdded():
+		test.insertRows(d)
+		del d
 	d = reader('BARCODES.dbf')
 	test.updateDelete(d)
 	d = reader('LIQCODE.dbf')
 	test = sqler()
-	test.insertRows(d)
-	del d
+	if d.recordsAdded():
+		test.insertRows(d)
+		del d
 	d = reader('LIQCODE.dbf')
 	test.updateDelete(d)
 	t2 = time.time()
