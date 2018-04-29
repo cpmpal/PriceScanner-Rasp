@@ -3,134 +3,126 @@
 from appJar import gui
 from threading import Lock
 from threading import Thread
-from dbfread import DBF
 import sambaThread
 import time
-
+from datetime import datetime
+import dbfSqliter
+import sqlite3
 
 dbfLock = Lock()
+BARCODE_URL = 'barcodes.db'
+PRODUCT_FILES = ['BARCODES.dbf', 'LIQCODE.dbf']
 
-'''
-
-	BARCODES
-	0 - Code Number
-	1 - Barcode
-	2 - Qty
-	3 - Price
-	4 - P_price
-	5 - Start Prom
-	6 - End Prom
-	7 - Flat Tax
-	8 - Price B
-	...
-	16 - Price J
-
-
-	LIQCODES
-	0 - Code Number
-	1 - Barcode
-	2 - Barcode 2
-	3 - Brand
-	4 - Description
-	5 - Type
-	6 - Size
-	7 - Cost
-	8 - Last Cost
-	9 - Next Cost
-	10 - Cost_2
-	11 - Cost_3
-	12 - Price
-	37 - Taxable
-	53 - Deposit
-	54 - Deposit Amount
-	45 - Case Price
-	46 - Standard Quantity
-
-
-'''
-
-class Product:
-	def __init__(self, barcode, barcodes, liqcode):
-		app.thread(meter, 5)
-		self.price = None
-		self.qty = None
+class product:
+	def __init__(self):
 		self.brand = ''
-		self.desc = ''
-		self.barcode = barcode.upper()
-		self.codeNum = ''
+		self.descrip = ''
+		self.qty = None
 		self.singlePrice = None
 		self.casePrice = None
-		self.barcodes = DBF(barcodes, load=True, encoding='latin-1')
-		print(type(self.barcodes))
-		self.liqcode = DBF(liqcode, load=True, encoding='latin-1')
-		self.deposit =  None
+		self.price = None
 		self.dep = False
+		self.depAmt = None
+		self.barcode = ''
+		self.code_num = ''
 		self.found = False
 
-	def priceFound(self):
-		return self.price is None
-	
-	def getCodeNum(self):
-		for b in self.barcodes:
-			if b.items()[1][1] == self.barcode:
-				self.codeNum = b.items()[0][1]
-				self.qty = b.items()[2][1]
-				self.price = b.items()[3][1]
-				self.barcode = b.items()[1][1]
-				self.found = True
-			if b.items()[0][1] == self.codeNum and b.items()[1][1].startswith('S'):
-				self.singlePrice = b.items()[3][1]
-			if b.items()[0][1] == self.codeNum and b.items()[1][1].startswith('C'):
-				self.casePrice = b.items()[3][1]
-				return
-
-	def getName(self):
-		for l in self.liqcode:
-			if l.items()[0][1] == self.codeNum:
-				self.found = True
-				self.brand = l.items()[3][1]
-				self.desc = l.items()[4][1]
-				if self.qty is None:
-					self.qty = l.items()[58][1]
-				if self.price is None:
-					self.price = l.items()[12][1]
-					self.dep = True if l.items()[53][1] == u'Y' else False
-				if self.dep:
-					self.deposit = self.qty * 0.05
-
-	def getProduct(self):
-		self.getCodeNum()
-		app.thread(meter, 50)
-		self.getName()
-		app.thread(meter, 100)
+	def setSinglePrice(self, price):
+		if not self.singlePrice:
+			self.singlePrice = price
 		
+	def setPrice(self, price):
+		if not self.price:
+			if price:
+				self.price = price
+
+	def setCasePrice(self, price):
+		if not self.casePrice:
+			self.casePrice = price
+
+	def setQty(self, qty):
+		if not self.qty:
+			if not qty <= 0:
+				self.qty = qty
+			else:
+				self.qty = 1
+
+	def setDep(self, d, amt):
+		if d == 'Y':
+			self.dep = True
+			if amt != 0:
+				self.depAmt = amt
+
+	def makeProduct(self, bar):
+		barcodeSel = 'SELECT * FROM BARCODES WHERE BARCODE = "'
+		liqcodeSel = 'SELECT * FROM LIQCODE WHERE CODE_NUM = "'
+		conn = sqlite3.connect(BARCODE_URL)
+		conn.execute('PRAGMA read_uncommitted = true;')
+		conn.row_factory = sqlite3.Row
+		c = conn.cursor()			
+		c.execute(barcodeSel+bar+'";')
+		barc = c.fetchone()
+		if barc:
+			self.found = True
+			self.barcode = bar
+			self.code_num = barc['CODE_NUM']
+			self.setPrice(barc['PRICE'])
+			c.execute(barcodeSel+'S'+bar+'";')
+			barc = c.fetchone()
+			if barc:
+				self.setSinglePrice(barc['PRICE'])
+			c.execute(barcodeSel+'C'+bar+'";')
+			barc = c.fetchone()
+			if barc:
+				self.setCasePrice(barc['PRICE'])
+			c.execute(liqcodeSel+self.code_num+'";')
+			liqc = c.fetchone()
+			if liqc:
+				self.brand = liqc['BRAND']
+				self.descrip = liqc['DESCRIP']
+				self.setQty(liqc['STD_QTY'])
+				self.setPrice(liqc['PRICE'])
+				self.setDep(liqc['DEPOSIT'], liqc['DEP_AMT'])
+		else:
+			self.found = False
+			
+		conn.close()
+		return
+
+
+	def makePrice(self, price):
+		if not price:
+			return 'N/A'
+		else:
+			return '${:.2f}'.format(price)
+
+	def makeQty(self):
+		if not self.qty:
+			return str(1)
+		else:
+			return str(self.qty)
+
+	def makeDeposit(self):
+		if self.dep:
+			if not self.depAmt:
+				return '${:.2f}'.format(int(self.makeQty())*0.05)
+			else:
+				return '${:.2f}'.format(int(self.makeQty())*self.depAmt)
+		else:
+			return 'N/A'
+
 	def __str__(self):
 		if not self.found:
-			return "Product Not Found :("
-		s = ''
-		s+='Brand: '+self.brand+'\n'
-		s+='Description: '+self.desc+'\n'
-		if self.price is not None:
-			s+='Price: %.2f' % self.price+'\n'
-		else:
-			s+='Price: N/A\n'
-		s+='QTY: %i' % self.qty+'\n'
-		s+='Barcode: '+self.barcode+'\n'
-		if self.singlePrice is not None:
-			s+='Single Price: %.2f' % self.singlePrice+'\n'
-		else:
-			s+='Single Price: N/A\n'
-		if self.casePrice is not None:
-			s+='Case Price: %.2f' % self.casePrice+'\n'
-		else:
-			s+='Case Price: N/A\n' 
-		if self.dep:
-			s+='Deposit: %.2f' % self.deposit+'\n'
-		else:
-			s+='Deposit: N/A\n'
-
+			return('Product Not Found :(\nPlease ask associate for help')
+		s = 'Brand: ' + self.brand + '\n'
+		s += 'Description: ' + self.descrip + '\n'
+		s += 'Qty: ' + self.makeQty() + '\n'
+		s += 'Price: ' + self.makePrice(self.price) + '\n'
+		s += 'Single Price: ' + self.makePrice(self.singlePrice) + '\n'
+		s += 'Case Price: ' + self.makePrice(self.casePrice) + '\n'
+		s += 'Deposit: ' + self.makeDeposit() + '\n'
+		s += 'Barcode: ' + self.barcode + '\n'
 		return s
-
 
 
 def meter(meterPercent):
@@ -142,43 +134,79 @@ def meter(meterPercent):
 
 def findProduct():
 	bar = app.getEntry("Barcode")
-	with dbfLock:
-		prod = Product(bar, 'BARCODES.dbf', 'LIQCODE.DBF')
-		prod.getProduct()
+	prod = product()
+	prod.makeProduct(bar)
 	return(str(prod))
 
 def updateMessage(mess):
 	app.queueFunction(app.setMessage, "prod", mess)
+	app.queueFunction(app.setEntry, "Barcode", "")
 
 def entryFunc():
 	app.threadCallback(findProduct, updateMessage)
 
 def fileWorker():
-	app.queueFunction(app.setStatusbar, "Updating", field=0)
+	time.sleep(150)
+	app.queueFunction(app.setStatusbar, "File Sync: Updating", field=0)
 	with dbfLock:
 		s = sambaThread.samb()
 		status = s.getFile()
 	if status: 
-		app.queueFunction(app.setStatusbar, "Updated", field=0)
+		app.queueFunction(app.setStatusbar, "File Sync: Updated", field=0)
 	else:
-		app.queueFunction(app.setStatusbar, "Failed!", field=0)
+		app.queueFunction(app.setStatusbar, "File Sync: Failed!", field=0)
 	
-	time.sleep(300)
+	time.sleep(150)
 	fileWorker()
 
+def updateDB():
+	app.queueFunction(app.setStatusbar, "DB Sync: Importing Products", field=1)
+	for f in PRODUCT_FILES:
+		with dbfLock:
+			q = dbfSqliter.sqler()
+			d = dbfSqliter.reader(f)
+			if d.recordsAdded():
+				print "Records added in "+f+", adding new entries to db..."
+				q.insertRows(d)
+				del d
+				del q
+			app.queueFunction(app.setStatusbar, "DB Sync: Imported "+f, field=1)
+	app.queueFunction(app.setStatusbar, "DB Sync: Products Imported", field=1)
+	time.sleep(300)
+
+def updateDBDelete():
+	hour = datetime.now().hour
+	if not (hour >= 2 and hour <= 4):
+		time.sleep((2 - hour) % 24)
+	else:
+		app.queueFunction(app.setStatusbar, "Checking Deleted Entries...", field=2)
+		for f in PRODUCT_FILES:
+			with dbfLock:
+				q = dbfSqliter.sqler()
+				d = dbfSqliter.reader(f)
+				q.updateDelete(d)
+				app.queueFunction(app.setStatusbar, "DB Delete: Updated "+f, field=2)
+		app.queueFunction(app.setStatusbar, "DB Delete: Updated", field=2)
+
 if __name__ == "__main__":
-	app = gui("Price Scanner", "500x500")
+	app = gui("Price Scanner", "800x480")
 	app.addLabel("testLabel", "Scan barcode")
 	app.addMeter("progress")
 	app.setMeterFill("progress", "green")
 	app.addLabelEntry("Barcode")
+	app.setEntryWidth('Barcode', 200)
 	app.setEntryUpperCase("Barcode")
 	app.setFocus("Barcode")
 	app.setEntrySubmitFunction("Barcode", entryFunc)
 	app.hideMeter("progress")
 	app.addMessage("prod", "")
-	app.addStatusbar(header="File Updater", fields=2, side="left")
+	app.setMessageAnchor('prod', 'center')
+	app.setMessageSticky('prod', 'both')
+	app.setMessageWidth('prod', 400)
+	app.addStatusbar(fields=3, side="left")
 	app.thread(fileWorker)
+	app.thread(updateDB)
+	app.thread(updateDBDelete)
 	app.go()
 
 
