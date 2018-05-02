@@ -161,23 +161,18 @@ class reader:
 		return self.oldnum
 
 	def recordsAdded(self):
-		print self.numrec, self.oldnum
 		return self.numrec != self.oldnum
 	
 	def readRecord(self, delete=False, onceThrough=True):
-		print sys._getframe(1).f_code.co_name
 		if not self.recordsAdded():
 			yield None
 		else:
 			recordDelta = self.numrec - self.oldnum - 1
 			recordDelta = (-recordDelta*self.recsize)-1
-			print recordDelta
 			if abs(recordDelta) < self.lenheader:
 				self.f.seek(self.lenheader, 0)
 			else:
 				self.f.seek(recordDelta, 2)
-			print self.recsize
-			print self.f.tell()
 			for i in range(self.oldnum, self.numrec):
 				test = self.f.read(self.fmtsiz)
 				if b'\x1a' in test or len(test) != self.recsize: 
@@ -355,6 +350,7 @@ class sqler:
 		self.conn.executemany(insertStmt, dbf.readRecord())
 		self.conn.commit()
 		self.conn.close()
+		dbf.writeNewRecordSize()
 
 	def updateDelete(self, dbf):
 		self.connect()

@@ -61,10 +61,10 @@ class product:
 		conn.row_factory = sqlite3.Row
 		c = conn.cursor()			
 		c.execute(barcodeSel+bar+'";')
-		barc = c.fetchone()
-		if barc:
+		barc = c.fetchall()[-1]
+		self.barcode = bar
+		if barc and (not barc['DeletionFlag'] or barc['DeletionFlag']==0):
 			self.found = True
-			self.barcode = bar
 			self.code_num = barc['CODE_NUM']
 			self.setPrice(barc['PRICE'])
 			c.execute(barcodeSel+'S'+bar+'";')
@@ -77,12 +77,14 @@ class product:
 				self.setCasePrice(barc['PRICE'])
 			c.execute(liqcodeSel+self.code_num+'";')
 			liqc = c.fetchone()
-			if liqc:
+			if liqc and (not liqc['DeletionFlag'] or liqc['DeletionFlag']==0):
 				self.brand = liqc['BRAND']
 				self.descrip = liqc['DESCRIP']
 				self.setQty(liqc['STD_QTY'])
 				self.setPrice(liqc['PRICE'])
 				self.setDep(liqc['DEPOSIT'], liqc['DEP_AMT'])
+			else:
+				self.found = False
 		else:
 			self.found = False
 			
@@ -113,7 +115,7 @@ class product:
 
 	def __str__(self):
 		if not self.found:
-			return('Product Not Found :(\nPlease ask associate for help')
+			return('Product Not Found :(\nPlease ask associate for help\nBarcode: '+self.barcode)
 		s = 'Brand: ' + self.brand + '\n'
 		s += 'Description: ' + self.descrip + '\n'
 		s += 'Qty: ' + self.makeQty() + '\n'
@@ -189,7 +191,8 @@ def updateDBDelete():
 		app.queueFunction(app.setStatusbar, "DB Delete: Updated", field=2)
 
 if __name__ == "__main__":
-	app = gui("Price Scanner", "800x480")
+	app = gui("Downtown Wine & Spirits Price Scanner", "667x400")
+	app.setSize("fullscreen")
 	app.addLabel("testLabel", "Scan barcode")
 	app.addMeter("progress")
 	app.setMeterFill("progress", "green")
